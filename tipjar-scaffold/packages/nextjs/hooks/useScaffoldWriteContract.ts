@@ -14,7 +14,7 @@ function toNetworkName(chainId: number): string {
 export function useScaffoldWriteContract(contractName: string) {
   const chainId = useChainId()
   const networkName = toNetworkName(chainId)
-  const contract = (deployedContracts as ContractMap)[networkName]?.[contractName]
+  const contract = (deployedContracts as unknown as ContractMap)[networkName]?.[contractName]
 
   const { writeContract, data: hash, isPending, error, reset } = useWriteContract()
   const { data: receipt, isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({ hash })

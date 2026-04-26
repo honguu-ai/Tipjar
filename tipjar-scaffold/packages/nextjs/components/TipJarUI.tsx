@@ -22,7 +22,7 @@ export function TipJarUI() {
   const [tipAmount, setTipAmount] = useState('0.001')
 
   // deployedContracts.ts에서 현재 네트워크의 컨트랙트 주소 확인
-  const contractAddress = (deployedContracts as ContractMap)[networkName]?.TipJar?.address
+  const contractAddress = (deployedContracts as unknown as ContractMap)[networkName]?.TipJar?.address
 
   // ── Scaffold 훅 사용 ─────────────────────────────────────────────
   // contractName만 주면 deployedContracts에서 address/abi 자동 조회
@@ -58,23 +58,51 @@ export function TipJarUI() {
   const isOwner = owner && userAddress &&
     (owner as string).toLowerCase() === userAddress.toLowerCase()
 
-  // 아직 배포 안 된 경우
+  // 배포된 네트워크 목록 확인
+  const deployedNetworks = Object.keys(deployedContracts as unknown as ContractMap)
+  const isWrongNetwork = !contractAddress && deployedNetworks.length > 0
+
+  // 현재 네트워크에 컨트랙트가 없는 경우
   if (!contractAddress) {
     return (
       <div className="section">
         <div className="card card--no-deploy">
-          <p style={{ margin: 0, fontSize: 15, color: 'var(--text-h)', fontWeight: 500 }}>
-            컨트랙트가 아직 배포되지 않았습니다
-          </p>
-          <p style={{ margin: 0, fontSize: 13 }}>아래 명령어로 배포하면 이 화면이 자동으로 업데이트됩니다.</p>
-          <div className="scaffold-hint">
-            <strong># 1. 로컬 블록체인 실행 (터미널 A)</strong>{'\n'}
-            npm run chain{'\n\n'}
-            <strong># 2. 컨트랙트 배포 (터미널 B)</strong>{'\n'}
-            npm run deploy{'\n\n'}
-            <strong># Sepolia 배포</strong>{'\n'}
-            npm run deploy:sepolia
-          </div>
+          {isWrongNetwork ? (
+            <>
+              <p style={{ margin: 0, fontSize: 15, color: 'var(--text-h)', fontWeight: 500 }}>
+                네트워크를 변경해주세요
+              </p>
+              <p style={{ margin: 0, fontSize: 13 }}>
+                현재 연결된 네트워크: <strong>{networkName}</strong>
+              </p>
+              <div className="alert alert--info" style={{ textAlign: 'left' }}>
+                MetaMask에서 네트워크를 아래 중 하나로 변경하세요:
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+                  {deployedNetworks.map(n => (
+                    <li key={n}><strong>{n}</strong></li>
+                  ))}
+                </ul>
+              </div>
+              <div className="scaffold-hint">
+                배포된 컨트랙트 주소 ({deployedNetworks[0]}){'\n'}
+                {(deployedContracts as unknown as ContractMap)[deployedNetworks[0]]?.TipJar?.address}
+              </div>
+            </>
+          ) : (
+            <>
+              <p style={{ margin: 0, fontSize: 15, color: 'var(--text-h)', fontWeight: 500 }}>
+                컨트랙트가 아직 배포되지 않았습니다
+              </p>
+              <div className="scaffold-hint">
+                <strong># 1. 로컬 블록체인 실행 (터미널 A)</strong>{'\n'}
+                npm run chain{'\n\n'}
+                <strong># 2. 컨트랙트 배포 (터미널 B)</strong>{'\n'}
+                npm run deploy{'\n\n'}
+                <strong># Sepolia 배포</strong>{'\n'}
+                npm run deploy:sepolia
+              </div>
+            </>
+          )}
         </div>
       </div>
     )

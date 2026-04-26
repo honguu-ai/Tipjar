@@ -28,7 +28,7 @@ export function useScaffoldReadContract({
   const networkName = toNetworkName(chainId) as NetworkName
 
   // deployedContracts에서 현재 네트워크의 컨트랙트 정보를 가져옴
-  const allOnNetwork = (deployedContracts as Record<string, Record<string, { address: string; abi: unknown[] }>>)[networkName]
+  const allOnNetwork = (deployedContracts as unknown as Record<string, Record<string, { address: string; abi: unknown[] }>>)[networkName]
   const contract = allOnNetwork?.[contractName]
 
   return useReadContract({
