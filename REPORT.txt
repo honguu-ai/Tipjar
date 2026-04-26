@@ -1,0 +1,629 @@
+# 블록체인 스마트 컨트랙트 웹 배포 실습 보고서
+
+> 작성일: 2026-04-26  
+> 실습 환경: macOS · Node.js v25.9.0 · MetaMask
+
+---
+
+## 목차
+
+1. [실습 개요](#1-실습-개요)
+2. [실습 A — wagmi + viem 방식 (tipjar-wagmi)](#2-실습-a--wagmi--viem-방식-tipjar-wagmi)
+3. [실습 B — Scaffold-ETH 2 방식 (tipjar-scaffold)](#3-실습-b--scaffold-eth-2-방식-tipjar-scaffold)
+4. [두 방식 비교](#4-두-방식-비교)
+5. [트러블슈팅](#5-트러블슈팅)
+6. [핵심 개념 정리](#6-핵심-개념-정리)
+
+---
+
+## 1. 실습 개요
+
+### 목표
+
+TipJar 스마트 컨트랙트를 두 가지 개발 환경에서 웹 브라우저로 배포·상호작용하는 방법을 구현한다.
+
+| 방식 | 디렉토리 | 특징 |
+|------|----------|------|
+| wagmi + viem | `tipjar-wagmi/` | Vite + React, 바이트코드 내장, 빠른 프로토타이핑 |
+| Scaffold-ETH 2 | `tipjar-scaffold/` | Hardhat + Next.js, 자동 컨트랙트 연동, 실무형 모노레포 |
+
+### TipJar 스마트 컨트랙트
+
+```solidity
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.22;
+
+contract TipJar {
+    address public owner;
+
+    event Tiprecv(address indexed tipper, uint256 amount);
+    event TipWithDrawn(address indexed owner, uint256 amount);
+
+    constructor() {
+        owner = msg.sender;         // 배포자가 자동으로 owner
+    }
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only Owner can call this func.");
+        _;
+    }
+
+    function tip() public payable { ... }        // ETH 전송
+    function withdrawTips() public onlyOwner { ... } // owner만 인출
+    function getBalance() public view returns (uint256) { ... }
+}
+```
+
+| 함수 | 타입 | 설명 |
+|------|------|------|
+| `tip()` | payable | 누구나 ETH를 보낼 수 있음 |
+| `withdrawTips()` | onlyOwner | owner만 전액 인출 |
+| `getBalance()` | view | 컨트랙트 잔액 조회 |
+| `owner` | public | 배포자 주소 |
+
+---
+
+## 2. 실습 A — wagmi + viem 방식 (tipjar-wagmi)
+
+### 2-1. 개념
+
+Remix IDE처럼 **이미 컴파일된 바이트코드**를 코드에 내장하고, wagmi 훅으로 직접 배포·상호작용하는 방식이다. 별도의 백엔드나 Hardhat 없이 브라우저만으로 동작한다.
+
+### 2-2. 기술 스택
+
+```
+Vite + React 19
+wagmi v3
+viem v2
+ConnectKit v1 (지갑 연결 UI)
+@tanstack/react-query v5
+```
+
+### 2-3. 프로젝트 구조
+
+```
+tipjar-wagmi/
+├── src/
+│   ├── config/
+│   │   └── wagmi.ts              ← wagmi 설정 (Sepolia + Hardhat)
+│   ├── components/
+│   │   ├── Header.tsx            ← ConnectKit 버튼 + 네트워크 뱃지
+│   │   ├── DeployContract.tsx    ← 컨트랙트 배포 UI
+│   │   └── InteractContract.tsx  ← 팁/출금/잔액 UI
+│   ├── contract.ts               ← ABI + 컴파일된 Bytecode
+│   ├── App.tsx                   ← 탭 전환 (배포 ↔ 상호작용)
+│   └── main.tsx                  ← Provider 설정
+└── package.json
+```
+
+### 2-4. wagmi 설정
+
+```typescript
+// src/config/wagmi.ts
+import { createConfig, http } from 'wagmi'
+import { sepolia, hardhat } from 'wagmi/chains'
+import { injected, walletConnect } from 'wagmi/connectors'
+
+export const config = createConfig({
+  chains: [sepolia, hardhat],
+  connectors: [
+    injected(),                    // MetaMask 등 브라우저 지갑
+    walletConnect({ projectId }),  // WalletConnect (선택)
+  ],
+  transports: {
+    [sepolia.id]: http(`https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`),
+    [hardhat.id]: http('http://127.0.0.1:8545'),
+  },
+})
+```
+
+### 2-5. Provider 계층 구조
+
+```tsx
+// main.tsx
+<WagmiProvider config={config}>
+  <QueryClientProvider client={queryClient}>
+    <ConnectKitProvider theme="auto">
+      <App />
+    </ConnectKitProvider>
+  </QueryClientProvider>
+</WagmiProvider>
+```
+
+### 2-6. 컨트랙트 컴파일 (solc)
+
+Remix IDE 없이 `npx solc`로 직접 컴파일하여 바이트코드를 추출했다.
+
+```bash
+npx solc --abi --bin --optimize test.sol --output-dir ./compiled
+```
+
+추출된 바이트코드를 `contract.ts`에 상수로 저장:
+
+```typescript
+// src/contract.ts
+export const TIPJAR_BYTECODE = '0x6080604052...' as const
+export const TIPJAR_ABI = [...] as const
+```
+
+### 2-7. 배포 구현 (useDeployContract)
+
+```tsx
+// components/DeployContract.tsx
+const { deployContract, data: txHash, isPending } = useDeployContract()
+const { data: receipt } = useWaitForTransactionReceipt({ hash: txHash })
+
+function handleDeploy() {
+  deployContract({
+    abi: TIPJAR_ABI,
+    bytecode: TIPJAR_BYTECODE,
+  })
+}
+
+// 배포 완료 후: receipt.contractAddress 에 배포된 주소가 담김
+```
+
+**배포 흐름:**
+
+```
+버튼 클릭
+  → deployContract() 호출
+  → MetaMask 승인 팝업
+  → 트랜잭션 전송 (txHash 반환)
+  → useWaitForTransactionReceipt 로 블록 확인
+  → receipt.contractAddress 로 주소 확인
+```
+
+### 2-8. 상호작용 구현
+
+```tsx
+// components/InteractContract.tsx
+
+// 읽기 (잔액 조회)
+const { data: balance, refetch } = useReadContract({
+  address: contractAddress,
+  abi: TIPJAR_ABI,
+  functionName: 'getBalance',
+})
+
+// 쓰기 (팁 전송)
+const { writeContract } = useWriteContract()
+
+writeContract({
+  address: contractAddress,
+  abi: TIPJAR_ABI,
+  functionName: 'tip',
+  value: parseEther('0.001'),  // viem 유틸
+})
+
+// 출금 (owner 전용)
+writeContract({
+  address: contractAddress,
+  abi: TIPJAR_ABI,
+  functionName: 'withdrawTips',
+})
+```
+
+### 2-9. 실행
+
+```bash
+cd tipjar-wagmi
+npm run dev    # http://localhost:5173
+```
+
+---
+
+## 3. 실습 B — Scaffold-ETH 2 방식 (tipjar-scaffold)
+
+### 3-1. 개념
+
+Scaffold-ETH 2는 **Hardhat(스마트 컨트랙트) + Next.js(프론트엔드)** 를 하나의 모노레포로 관리하는 풀스택 프레임워크 패턴이다.
+
+핵심 특징: `npm run deploy` 하나로 **컨트랙트 주소와 ABI가 프론트엔드에 자동 반영**된다.
+
+```
+배포 스크립트 실행
+  → Hardhat이 TipJar.sol 배포
+  → deploy/00_deploy_tipjar.ts 가 deployedContracts.ts 자동 생성
+  → 프론트엔드 훅이 이 파일을 import해 자동으로 컨트랙트 연결
+```
+
+### 3-2. 기술 스택
+
+```
+모노레포 (npm workspaces)
+├── packages/hardhat/   Hardhat v2 + hardhat-deploy + TypeScript
+└── packages/nextjs/    Next.js 14 + wagmi v2 + viem v2 + ConnectKit v1
+```
+
+### 3-3. 모노레포 구조
+
+```
+tipjar-scaffold/
+├── package.json                          ← 루트 워크스페이스 (npm run chain 등)
+└── packages/
+    ├── hardhat/
+    │   ├── contracts/
+    │   │   └── TipJar.sol
+    │   ├── deploy/
+    │   │   └── 00_deploy_tipjar.ts       ← 핵심: 배포 + 파일 자동 생성
+    │   ├── hardhat.config.ts             ← 네트워크 설정, 커스텀 task
+    │   └── package.json
+    └── nextjs/
+        ├── app/                          ← Next.js App Router
+        ├── contracts/
+        │   └── deployedContracts.ts      ← 자동 생성됨
+        ├── hooks/
+        │   ├── useScaffoldReadContract.ts
+        │   └── useScaffoldWriteContract.ts
+        ├── components/
+        │   ├── Header.tsx
+        │   └── TipJarUI.tsx
+        ├── scaffold.config.ts            ← 네트워크/API키 중앙 관리
+        └── wagmi.config.ts
+```
+
+### 3-4. 루트 스크립트
+
+```json
+// package.json (루트)
+{
+  "scripts": {
+    "chain":          "hardhat node",               // 로컬 블록체인
+    "deploy":         "hardhat deploy --network localhost",
+    "deploy:sepolia": "hardhat deploy --network sepolia",
+    "account:import": "hardhat account-import",     // 개인키 저장
+    "dev":            "next dev"                    // 프론트엔드
+  }
+}
+```
+
+### 3-5. Hardhat 설정
+
+```typescript
+// packages/hardhat/hardhat.config.ts
+const config: HardhatUserConfig = {
+  solidity: '0.8.22',
+  networks: {
+    localhost: { url: 'http://127.0.0.1:8545', chainId: 31337 },
+    sepolia: {
+      url: `https://eth-sepolia.g.alchemy.com/v2/${ALCHEMY_KEY}`,
+      accounts: [DEPLOYER_PRIVATE_KEY],
+      chainId: 11155111,
+    },
+  },
+  namedAccounts: {
+    deployer: { default: 0 },  // 첫 번째 계정이 자동으로 배포자
+  },
+}
+```
+
+### 3-6. 배포 스크립트 (SE-2 핵심)
+
+```typescript
+// packages/hardhat/deploy/00_deploy_tipjar.ts
+const deploy: DeployFunction = async (hre) => {
+  const { deploy } = hre.deployments
+  const { deployer } = await hre.getNamedAccounts()
+
+  // 1. 컨트랙트 배포
+  const result = await deploy('TipJar', {
+    from: deployer,
+    args: [],
+    log: true,
+    autoMine: true,
+  })
+
+  // 2. deployedContracts.ts 자동 생성 ← SE-2의 핵심 패턴
+  const artifact = await hre.artifacts.readArtifact('TipJar')
+  const content = `
+export const deployedContracts = {
+  "${hre.network.name}": {
+    TipJar: {
+      address: "${result.address}",
+      abi: ${JSON.stringify(artifact.abi)}
+    }
+  }
+} as const`
+
+  fs.writeFileSync('../../nextjs/contracts/deployedContracts.ts', content)
+}
+```
+
+**실행 결과로 생성되는 파일:**
+
+```typescript
+// packages/nextjs/contracts/deployedContracts.ts (자동 생성)
+export const deployedContracts = {
+  "localhost": {
+    TipJar: {
+      address: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+      abi: [ ... ]
+    }
+  }
+} as const
+```
+
+### 3-7. scaffold.config.ts — 중앙 설정 파일
+
+```typescript
+// packages/nextjs/scaffold.config.ts
+export const scaffoldConfig = {
+  targetNetworks: [hardhat, sepolia],  // 지원 네트워크
+  pollingInterval: 30_000,
+  alchemyApiKey: process.env.NEXT_PUBLIC_ALCHEMY_API_KEY ?? '',
+  walletConnectProjectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? '',
+}
+```
+
+### 3-8. Scaffold 커스텀 훅
+
+SE-2의 가장 큰 특징은 **컨트랙트 이름만 주면** 주소·ABI를 자동으로 찾아주는 훅이다.
+
+```typescript
+// hooks/useScaffoldReadContract.ts
+export function useScaffoldReadContract({ contractName, functionName, args, watch }) {
+  const chainId = useChainId()
+  const networkName = toNetworkName(chainId)  // 31337 → 'localhost'
+
+  // deployedContracts.ts 에서 자동으로 address/abi 조회
+  const contract = deployedContracts[networkName]?.[contractName]
+
+  return useReadContract({
+    address: contract?.address,
+    abi: contract?.abi,
+    functionName,
+    args,
+    query: {
+      enabled: !!contract,
+      refetchInterval: watch ? 5_000 : undefined,
+    },
+  })
+}
+```
+
+```typescript
+// hooks/useScaffoldWriteContract.ts
+export function useScaffoldWriteContract(contractName) {
+  const contract = deployedContracts[networkName]?.[contractName]
+  const { writeContract, ... } = useWriteContract()
+
+  function writeContractAsync({ functionName, args, value }) {
+    writeContract({
+      address: contract.address,  // 자동
+      abi: contract.abi,          // 자동
+      functionName,
+      args,
+      value,
+    })
+  }
+  return { writeContractAsync, ... }
+}
+```
+
+### 3-9. 프론트엔드에서의 사용
+
+```tsx
+// components/TipJarUI.tsx
+export function TipJarUI() {
+  // 주소/ABI 직접 입력 불필요 — contractName만으로 동작
+  const { data: balance } = useScaffoldReadContract({
+    contractName: 'TipJar',
+    functionName: 'getBalance',
+    watch: true,               // 5초마다 자동 갱신
+  })
+
+  const { writeContractAsync } = useScaffoldWriteContract('TipJar')
+
+  const sendTip = () =>
+    writeContractAsync({
+      functionName: 'tip',
+      value: parseEther('0.001'),
+    })
+
+  const withdrawAll = () =>
+    writeContractAsync({ functionName: 'withdrawTips' })
+}
+```
+
+### 3-10. 실행 순서
+
+```bash
+# 터미널 1 — 로컬 블록체인
+npm run chain
+
+# 터미널 2 — 컨트랙트 배포 (deployedContracts.ts 자동 생성)
+npm run deploy
+
+# 터미널 3 — 프론트엔드
+npm run dev     # http://localhost:3000
+```
+
+**Sepolia 배포:**
+
+```bash
+# 1. 개인키 저장 (SE-2의 yarn account:import 대응)
+npm run account:import -- --key 0x개인키
+
+# 2. .env에 ALCHEMY_API_KEY 추가
+
+# 3. Sepolia 배포
+npm run deploy:sepolia
+```
+
+**MetaMask 로컬 네트워크 설정:**
+
+| 항목 | 값 |
+|------|-----|
+| 네트워크 이름 | Hardhat Local |
+| RPC URL | http://127.0.0.1:8545 |
+| 체인 ID | 31337 |
+| 통화 기호 | ETH |
+
+> `npm run chain` 출력에서 `Private Key` 복사 → MetaMask 계정 가져오기
+
+---
+
+## 4. 두 방식 비교
+
+| 항목 | tipjar-wagmi | tipjar-scaffold |
+|------|-------------|-----------------|
+| **프레임워크** | Vite + React | Next.js 14 App Router |
+| **지갑 연결** | ConnectKit | ConnectKit |
+| **블록체인 라이브러리** | wagmi v3 + viem v2 | wagmi v2 + viem v2 |
+| **컨트랙트 관리** | 바이트코드 하드코딩 | Hardhat 컴파일 + 배포 |
+| **컨트랙트 주소** | 수동으로 `contract.ts` 수정 | `deployedContracts.ts` 자동 생성 |
+| **훅 방식** | `useReadContract` 직접 | `useScaffoldReadContract` (주소 자동) |
+| **네트워크 전환** | config에서 수동 | `scaffold.config.ts` 한 곳 관리 |
+| **구조** | 단일 패키지 | npm workspaces 모노레포 |
+| **적합한 상황** | 빠른 프로토타입, 학습 | 실무 프로젝트, 팀 협업 |
+
+---
+
+## 5. 트러블슈팅
+
+### 문제 1: EventEmitter is not a constructor (tipjar-wagmi)
+
+**원인:** ConnectKit의 `getDefaultConfig`가 내부적으로 `@aave/account` 패키지를 로드하는데, 이 패키지가 Node.js 전용 `EventEmitter`를 브라우저에서 사용하려다 충돌.
+
+```
+Uncaught TypeError: import_browser_external_events.EventEmitter is not a constructor
+    at aaveAccountConnector
+    at defaultConnectors
+    at defaultConfig  ← getDefaultConfig 내부
+```
+
+**해결:** `getDefaultConfig` 대신 wagmi의 `createConfig`를 직접 사용.
+
+```typescript
+// Before (충돌)
+import { getDefaultConfig } from 'connectkit'
+export const config = createConfig(getDefaultConfig({ ... }))
+
+// After (해결)
+import { createConfig } from 'wagmi'
+import { injected } from 'wagmi/connectors'
+export const config = createConfig({
+  chains: [...],
+  connectors: [injected()],
+  transports: { ... },
+})
+```
+
+### 문제 2: next.config.ts 미지원 (tipjar-scaffold)
+
+**원인:** Next.js 14는 `next.config.ts`를 지원하지 않음.
+
+```
+Error: Configuring Next.js via 'next.config.ts' is not supported.
+```
+
+**해결:** `next.config.mjs`로 교체.
+
+```javascript
+// next.config.mjs
+const nextConfig = { reactStrictMode: true }
+export default nextConfig
+```
+
+### 문제 3: BigInt 리터럴 타입 오류
+
+**원인:** `tsconfig.json`의 `target`이 `ES2017`이라 `0n` 문법 미지원.
+
+```
+Type error: BigInt literals are not available when targeting lower than ES2020.
+```
+
+**해결:** `tsconfig.json`에서 target 변경 + 코드 수정.
+
+```json
+// tsconfig.json
+{ "compilerOptions": { "target": "ES2020" } }
+```
+
+```typescript
+// Before
+balance === 0n
+// After
+balance === BigInt(0)
+```
+
+### 문제 4: npm run dev 스크립트 없음
+
+**원인:** 루트 `package.json`에 `dev` 스크립트 없이 `frontend`로만 명명.
+
+**해결:** 루트 `package.json`에 `dev` 별칭 추가.
+
+```json
+{
+  "scripts": {
+    "dev": "npm run dev --workspace=packages/nextjs"
+  }
+}
+```
+
+---
+
+## 6. 핵심 개념 정리
+
+### ABI (Application Binary Interface)
+
+컨트랙트의 함수·이벤트 목록을 JSON으로 정의한 명세서. 프론트엔드가 컨트랙트와 통신할 때 반드시 필요하다.
+
+```json
+{
+  "inputs": [],
+  "name": "getBalance",
+  "outputs": [{ "type": "uint256" }],
+  "stateMutability": "view",
+  "type": "function"
+}
+```
+
+### Bytecode
+
+솔리디티 소스코드를 EVM이 실행할 수 있는 이진 코드로 컴파일한 결과물. 컨트랙트 배포 트랜잭션의 `data` 필드에 담겨 전송된다.
+
+### wagmi 주요 훅
+
+| 훅 | 용도 |
+|----|------|
+| `useAccount()` | 연결된 지갑 주소, 연결 상태 |
+| `useChainId()` | 현재 네트워크 체인 ID |
+| `useReadContract()` | view/pure 함수 호출 (읽기) |
+| `useWriteContract()` | 상태 변경 함수 호출 (쓰기, 가스 소모) |
+| `useDeployContract()` | 새 컨트랙트 배포 |
+| `useWaitForTransactionReceipt()` | 트랜잭션 완료 대기 |
+
+### viem 주요 유틸
+
+```typescript
+import { parseEther, formatEther, isAddress } from 'viem'
+
+parseEther('0.001')    // '0.001 ETH' → BigInt(1000000000000000n)
+formatEther(1000000n)  // BigInt → '0.000000000001 ETH'
+isAddress('0x...')     // 유효한 이더리움 주소인지 검사
+```
+
+### hardhat-deploy
+
+Hardhat의 배포를 스크립트화하는 플러그인. `deploy/` 폴더의 스크립트를 순서대로 실행하며, 배포 이력을 `deployments/` 폴더에 저장한다.
+
+```typescript
+// 배포 스크립트 형식
+const deploy: DeployFunction = async (hre) => {
+  const { deploy } = hre.deployments
+  const { deployer } = await hre.getNamedAccounts()
+  await deploy('ContractName', { from: deployer, args: [], log: true })
+}
+deploy.tags = ['ContractName']
+export default deploy
+```
+
+### 네트워크 구분
+
+| 네트워크 | 체인 ID | 용도 |
+|---------|---------|------|
+| Hardhat Local | 31337 | 로컬 개발, 무료 ETH |
+| Sepolia | 11155111 | 퍼블릭 테스트넷, 무료 테스트 ETH |
+| Ethereum Mainnet | 1 | 실제 서비스, 실제 ETH 필요 |

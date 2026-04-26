@@ -1,0 +1,18 @@
+{
+  "name": "tipjar-scaffold",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "chain":          "npm run chain          --workspace=packages/hardhat",
+    "deploy":         "npm run deploy         --workspace=packages/hardhat",
+    "deploy:sepolia": "npm run deploy:sepolia --workspace=packages/hardhat",
+    "account:import": "npm run account:import --workspace=packages/hardhat",
+    "compile":        "npm run compile        --workspace=packages/hardhat",
+    "dev":            "npm run dev            --workspace=packages/nextjs",
+    "frontend":       "npm run dev            --workspace=packages/nextjs",
+    "build":          "npm run build          --workspace=packages/nextjs"
+  }
+}
